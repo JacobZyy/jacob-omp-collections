@@ -92,12 +92,12 @@ OMP 加载路径：`~/.omp/agent/mcp.json`
 ## OMP Extension API
 
 ```ts
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent'
 
 export default function myPlugin(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => { /* ... */ });
-  pi.on("tool_call", async (event) => { /* ... */ });
-  pi.on("tool_result", async (event) => { /* ... */ });
+  pi.on('session_start', async (_event, ctx) => { /* ... */ })
+  pi.on('tool_call', async (event) => { /* ... */ })
+  pi.on('tool_result', async (event) => { /* ... */ })
 }
 ```
 

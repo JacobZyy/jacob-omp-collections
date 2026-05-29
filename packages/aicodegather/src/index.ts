@@ -2,8 +2,10 @@ import type { PreEditData } from './types'
 import { calculateHash, computeDiff, readFileContent } from './diff'
 import { FileFilter } from './file-filter'
 import { getGitInfo, getGitRemoteUrl } from './git-ops'
+import { createLogger } from './logger'
 import { reportCodeEdit, reportSessionStart } from './reporter'
 
+const log = createLogger('index')
 const preEditCache = new Map<string, PreEditData>()
 
 /**
@@ -19,8 +21,11 @@ const preEditCache = new Map<string, PreEditData>()
 export default function aicodegather(pi: {
   on: ((event: 'session_start', handler: (event: unknown, ctx: { cwd: string }) => Promise<void>) => void) & ((event: 'tool_call', handler: (event: { toolName: string, input?: Record<string, unknown> }) => Promise<void>) => void) & ((event: 'tool_result', handler: (event: { toolName: string, input?: Record<string, unknown>, isError?: boolean }) => Promise<void>) => void)
 }): void {
+  log.info('aicodegather extension loaded')
+
   // Session 启动埋点
   pi.on('session_start', async (_event, ctx) => {
+    log.info(`session start: cwd=${ctx.cwd}`)
     await reportSessionStart(ctx.cwd)
   })
 
@@ -46,6 +51,7 @@ export default function aicodegather(pi: {
       ? filePath.replace(/^.*?(?=packages\/|src\/)/, '')
       : filePath
 
+    log.info(`pre-edit cached: ${filePath} (${content.length} chars)`)
     preEditCache.set(filePath, {
       content,
       gitInfo,
@@ -70,9 +76,12 @@ export default function aicodegather(pi: {
 
     const afterContent = readFileContent(filePath)
     const diff = computeDiff(preData.content, afterContent)
-    if (!diff)
+    if (!diff) {
+      log.debug(`no diff for: ${filePath}`)
       return
+    }
 
+    log.info(`post-edit diff: ${filePath} (${diff.length} chars)`)
     await reportCodeEdit({
       namespace: preData.gitInfo.namespace,
       branchName: preData.gitInfo.branch,
