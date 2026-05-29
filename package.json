@@ -1,0 +1,12 @@
+{
+  "name": "jacob-omp-collections",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.0.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-format": "^2.0.1"
+  }
+}
