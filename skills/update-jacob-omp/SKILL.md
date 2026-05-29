@@ -1,61 +1,44 @@
 ---
 name: update-jacob-omp
-description: Update jacob-omp-collections marketplace plugins, skills, and MCP configs. Use when the user wants to update their OMP environment, check for new versions, or sync the latest from the jacob-omp-collections repo.
+description: Use when the user wants to release a new version of a plugin in jacob-omp-collections. Covers version bumping, commit, and push. Trigger when user says "发布", "升级版本", "release", "bump version" for any plugin.
 ---
 
-# Update jacob-omp-collections
+# jacob-omp-collections 发布流程
 
-Manage and update all content from the `JacobZyy/jacob-omp-collections` repository: marketplace plugins, skills, and MCP servers.
+## 版本号在哪
 
-## Components
+每个插件的版本号在 `packages/<plugin-name>/package.json` 的 `version` 字段。
 
-| Component          | Install method         | Update method          |
-| ------------------ | ---------------------- | ---------------------- |
-| Extensions/Plugins | `/marketplace install` | `/marketplace upgrade` |
-| Skills             | `install.sh` symlink   | `install.sh` re-run    |
-| MCP Servers        | `install.sh` merge     | `install.sh` re-run    |
+OMP 通过以下优先级取版本号：
+1. marketplace.json 中 plugin entry 的 `version`（我们不用）
+2. **`package.json` 的 `version`**（我们用这个）
+3. Git SHA
 
-## Update Procedures
+## 发布步骤
 
-### 1. Marketplace plugins
+当用户要求发布某个插件的新版本时：
 
-```
-/marketplace update jacob-omp-collections
-/marketplace upgrade aicodegather@jacob-omp-collections
-```
+1. 确认用户给定的版本号（semver 格式，如 `1.0.0` → `1.1.0`）
+2. 修改 `packages/<plugin-name>/package.json` 的 `version` 字段
+3. 提交：`git commit -m "release: <plugin-name>@<version>"`
+4. 推送：`git push`
 
-Or upgrade all at once:
-
-```
-/marketplace upgrade
-```
-
-### 2. Skills + MCP
-
-```bash
-cd ~/Documents/workspace/jacob-open-source/jacob-omp-collections
-git pull
-./install.sh
-```
-
-### 3. Full update (all components)
-
-```bash
-cd ~/Documents/workspace/jacob-open-source/jacob-omp-collections
-git pull
-./install.sh
-```
-
-Then in OMP session:
+用户侧更新命令（仅供参考，不需要自动执行）：
 
 ```
 /marketplace update jacob-omp-collections
-/marketplace upgrade
+/marketplace upgrade <plugin-name>@jacob-omp-collections
 ```
 
-## Troubleshooting
+## 当前插件清单
 
-- **Plugin not updating**: Run `/marketplace update jacob-omp-collections` first to refresh the catalog, then `/marketplace upgrade`
-- **Skills not loading**: Verify symlinks exist at `~/.omp/agent/skills/` — re-run `./install.sh`
-- **MCP not loading**: Check `~/.omp/agent/mcp.json` has the expected entries — re-run `./install.sh`
-- **Fresh install**: `/marketplace add JacobZyy/jacob-omp-collections` then `/marketplace install <name>@jacob-omp-collections` for each plugin, then `./install.sh`
+| 插件 | 路径 | 当前版本 |
+|---|---|---|
+| aicodegather | packages/aicodegather/ | 见 package.json |
+
+## 注意事项
+
+- 只改 `version` 字段，不要改其他内容
+- commit message 格式固定：`release: <plugin-name>@<version>`
+- 不要修改 `.claude-plugin/marketplace.json`
+- Skills 和 MCP 没有版本号概念，改完 `./install.sh` 即可生效
