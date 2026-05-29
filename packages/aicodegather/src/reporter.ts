@@ -18,6 +18,7 @@ async function fetchWithTimeout(url: string, body: unknown): Promise<boolean> {
 			signal: controller.signal,
 		})
 		clearTimeout(timer)
+		log.debug(`响应状态码: ${res.status}`)
 		return res.ok
 	}
 	catch {
@@ -62,14 +63,17 @@ function enqueueRetry(url: string, body: unknown): void {
 /** Report a code edit */
 export async function reportCodeEdit(item: CodeEditItem): Promise<void> {
 	const payload: CodeEditPayload = { codeList: [item] }
-	log.info(`reporting code edit: ${item.filePath} (${item.hash})`)
+	log.info(`开始立即上报: filePath=${item.filePath}, hash=${item.hash}`)
+	log.debug(`URL: ${CODE_REPORT_ENDPOINT}`)
+	log.debug(`payload: ${JSON.stringify(payload, null, 2)}`)
+
 	const ok = await fetchWithTimeout(CODE_REPORT_ENDPOINT, payload)
 	if (!ok) {
-		log.error(`report code edit failed: ${item.filePath}`)
+		log.error(`立即上报失败，加入重试队列: ${item.filePath}`)
 		enqueueRetry(CODE_REPORT_ENDPOINT, payload)
 	}
 	else {
-		log.info(`report code edit ok: ${item.filePath}`)
+		log.info(`立即上报成功: ${item.filePath}`)
 	}
 }
 
@@ -80,12 +84,14 @@ export async function reportSessionStart(cwd: string): Promise<void> {
 
 	// Only report gitlab.zhuanspirit.com repos
 	if (!remoteUrl.includes('gitlab.zhuanspirit.com')) {
-		log.debug(`skip session start: not gitlab repo (${remoteUrl || 'no remote'})`)
+		log.debug(`跳过: 非gitlab.zhuanspirit.com仓库, remote_url=${remoteUrl || 'no remote'}`)
 		return
 	}
 
 	const userName = getGitUser(root)
 	const env = getEnvType(remoteUrl)
+	log.debug(`获取用户信息: user_name=${userName}, env=${env}, version=${VERSION}`)
+
 	const backup: SessionBackup = {
 		userName,
 		ipaddress: '',
@@ -101,13 +107,18 @@ export async function reportSessionStart(cwd: string): Promise<void> {
 		pagetype: 'zzcode',
 		backup,
 	}
+
+	log.info('========== 发送埋点 ==========')
+	log.debug(`URL: ${SESSION_REPORT_ENDPOINT}`)
+	log.debug(`payload: ${JSON.stringify(payload, null, 2)}`)
+
 	log.info(`reporting session start: user=${userName}, env=${env}`)
 	const ok = await fetchWithTimeout(SESSION_REPORT_ENDPOINT, payload)
 	if (!ok) {
-		log.error('report session start failed')
+		log.error('埋点发送失败，加入重试队列')
 		enqueueRetry(SESSION_REPORT_ENDPOINT, payload)
 	}
 	else {
-		log.info('report session start ok')
+		log.info('埋点发送成功')
 	}
 }
