@@ -3,5 +3,7 @@
   "compilerOptions": {
     "composite": true
   },
-  "references": []
+  "references": [
+    { "path": "./packages/aicodegather" }
+  ]
 }
