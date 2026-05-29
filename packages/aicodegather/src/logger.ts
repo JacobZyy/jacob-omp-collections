@@ -11,11 +11,13 @@ function ensureDir(): void {
   if (!existsSync(LOG_DIR))
     mkdirSync(LOG_DIR, { recursive: true })
 }
+// 标识来自 OMP extension 的日志，区别于 Python hooks
+const LOG_PREFIX = '🔌 '
 
 function formatMessage(level: LogLevel, module: string, msg: string): string {
   const now = new Date()
   const ts = now.toISOString().replace('T', ' ').replace('Z', '')
-  return `[${ts}] [${level}] [${module}] ${msg}\n`
+  return `[${ts}] [${level}] [${module}] ${LOG_PREFIX}${msg}\n`
 }
 
 function writeLog(file: string, level: LogLevel, module: string, msg: string): void {
