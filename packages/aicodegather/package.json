@@ -1,7 +1,7 @@
 {
   "name": "@jacob-omp-collections/aicodegather",
   "type": "module",
-  "version": "1.5.0",
+  "version": "1.4.3",
   "omp": {
     "extensions": ["./src/index.ts"]
   },

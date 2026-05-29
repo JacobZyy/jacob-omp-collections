@@ -4,6 +4,10 @@ import { calculateHash, computeDiff, readFileContent } from './diff'
 import { FileFilter } from './file-filter'
 import { getGitInfo, getGitRemoteUrl } from './git-ops'
 import { reportCodeEdit, reportSessionStart } from './reporter'
+import type {
+	ExtensionAPI,
+	ExtensionFactory,
+} from './omp-types'
 
 const log = createLogger('index')
 const preEditCache = new Map<string, PreEditData>()
@@ -43,42 +47,37 @@ export function extractFilePath(input: Record<string, unknown>): string | undefi
 }
 
 /**
- * OMP Extension 入口
+ * OMP Extension entry point.
  *
- * 事件映射：
- *   session_start  → 上报 session 埋点
- *   tool_call      → 记录编辑前文件内容
- *   tool_result    → 计算 diff 并上报
+ * Events:
+ *   session_start  → report session telemetry
+ *   tool_call      → cache file content before edit/write
+ *   tool_result    → compute diff and report after edit/write
  *
- * 仅处理 gitlab.zhuanspirit.com 仓库下的源码文件。
+ * Only processes source files in gitlab.zhuanspirit.com repos.
  */
-export default function aicodegather(pi: {
-	on: ((event: 'session_start', handler: (event: unknown, ctx: { cwd: string }) => Promise<void>) => void) &
-		((event: 'tool_call', handler: (event: { toolName: string, input?: Record<string, unknown> }) => Promise<void>) => void) &
-		((event: 'tool_result', handler: (event: { toolName: string, input?: Record<string, unknown>, isError?: boolean }) => Promise<void>) => void)
-}): void {
+const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
+	console.error('[aicodegather] extension factory called, registering handlers...')
 	log.info('aicodegather extension loaded')
 
-	// Session 启动埋点
 	pi.on('session_start', async (_event, ctx) => {
+		console.error(`[aicodegather] session_start fired: cwd=${ctx.cwd}`)
 		log.info('==================================================')
 		log.info('session_start 开始执行')
 		log.info(`session start: cwd=${ctx.cwd}`)
 		await reportSessionStart(ctx.cwd)
 		log.info('session_start 执行完成')
 	})
-
-	// 编辑前：记录当前文件内容
 	pi.on('tool_call', async (event) => {
-		if (!['edit', 'write'].includes(event.toolName))
+		console.error(`[aicodegather] tool_call fired: toolName=${event.toolName}`)
+		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
-
 		log.info('==================================================')
 		log.info('pre_edit 开始执行')
 
-		const filePath = extractFilePath(event.input ?? {})
+		const filePath = extractFilePath(event.input)
 		if (!filePath) {
-			log.error(`未找到file_path, input keys=${Object.keys(event.input ?? {}).join(',')}`)
+			log.error(`未找到file_path, input keys=${Object.keys(event.input).join(',')}`)
 			return
 		}
 
@@ -123,17 +122,21 @@ export default function aicodegather(pi: {
 		log.info('pre_edit 执行完成')
 	})
 
-	// 编辑后：计算 diff 并上报
 	pi.on('tool_result', async (event) => {
-		if (!['edit', 'write'].includes(event.toolName) || event.isError)
+		console.error(`[aicodegather] tool_result fired: toolName=${event.toolName}, isError=${event.isError}`)
+		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
+		if (event.isError) {
+			log.debug(`tool_result isError=true, toolName=${event.toolName}, 跳过`)
+			return
+		}
 
 		log.info('==================================================')
 		log.info('post_edit 开始执行')
 
-		const filePath = extractFilePath(event.input ?? {})
+		const filePath = extractFilePath(event.input)
 		if (!filePath) {
-			log.error(`未找到file_path, input keys=${Object.keys(event.input ?? {}).join(',')}`)
+			log.error(`未找到file_path, input keys=${Object.keys(event.input).join(',')}`)
 			return
 		}
 
@@ -185,3 +188,5 @@ export default function aicodegather(pi: {
 		log.info('post_edit 执行完成')
 	})
 }
+
+export default aicodegather
