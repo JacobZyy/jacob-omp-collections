@@ -1,0 +1,16 @@
+{
+  "name": "jacob-omp-collections",
+  "owner": {
+    "name": "Jacob"
+  },
+  "description": "Jacob's OMP plugin collection — AI code tracking, reporting, and more",
+  "plugins": [
+    {
+      "name": "aicodegather",
+      "description": "AI code edit tracking: captures diffs from Edit/Write tools and reports to internal analytics",
+      "source": "./packages/aicodegather",
+      "category": "development",
+      "tags": ["analytics", "code-tracking"]
+    }
+  ]
+}
