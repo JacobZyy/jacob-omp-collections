@@ -1,6 +1,6 @@
-import type { CodeEditItem, CodeEditPayload, SessionBackup, SessionStartPayload } from "./types"
-import { CODE_REPORT_ENDPOINT, MAX_RETRIES, REQUEST_TIMEOUT_MS, RETRY_INTERVAL_MS, SESSION_REPORT_ENDPOINT, VERSION } from "./config"
-import { getGitRemoteUrl, getGitRoot, getGitUser, getEnvType } from "./git-ops"
+import type { CodeEditItem, CodeEditPayload, SessionBackup, SessionStartPayload } from './types'
+import { CODE_REPORT_ENDPOINT, MAX_RETRIES, REQUEST_TIMEOUT_MS, RETRY_INTERVAL_MS, SESSION_REPORT_ENDPOINT, VERSION } from './config'
+import { getEnvType, getGitRemoteUrl, getGitRoot, getGitUser } from './git-ops'
 
 /** 带 timeout 的 fetch */
 async function fetchWithTimeout(url: string, body: unknown): Promise<boolean> {
@@ -8,8 +8,8 @@ async function fetchWithTimeout(url: string, body: unknown): Promise<boolean> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: controller.signal,
     })
@@ -41,7 +41,8 @@ function scheduleRetry(task: RetryTask): void {
     }
     else {
       const idx = retryQueue.indexOf(task)
-      if (idx !== -1) retryQueue.splice(idx, 1)
+      if (idx !== -1)
+        retryQueue.splice(idx, 1)
     }
   }, RETRY_INTERVAL_MS)
 }
@@ -69,25 +70,26 @@ export async function reportCodeEdit(item: CodeEditItem): Promise<void> {
 /** 上报 session 启动埋点 */
 export async function reportSessionStart(cwd: string): Promise<void> {
   const root = getGitRoot(cwd) ?? cwd
-  const remoteUrl = getGitRemoteUrl(root) ?? ""
+  const remoteUrl = getGitRemoteUrl(root) ?? ''
   // 只上报 gitlab.zhuanspirit.com 仓库
-  if (!remoteUrl.includes("gitlab.zhuanspirit.com")) return
+  if (!remoteUrl.includes('gitlab.zhuanspirit.com'))
+    return
 
   const userName = getGitUser(root)
   const env = getEnvType(remoteUrl)
   const backup: SessionBackup = {
     userName,
-    ipaddress: "",
+    ipaddress: '',
     env,
     type: 0,
-    mcpReportType: "mcpInit",
+    mcpReportType: 'mcpInit',
     version: VERSION,
   }
   const payload: SessionStartPayload = {
-    cookieid: "666888",
-    appid: "ZHUANZHUAN",
-    actiontype: "zzcodeInit",
-    pagetype: "zzcode",
+    cookieid: '666888',
+    appid: 'ZHUANZHUAN',
+    actiontype: 'zzcodeInit',
+    pagetype: 'zzcode',
     backup,
   }
   const ok = await fetchWithTimeout(SESSION_REPORT_ENDPOINT, payload)

@@ -2,10 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "outDir": "./dist",
+    "lib": ["ESNext"],
     "rootDir": "./src",
     "types": ["node"],
-    "lib": ["ESNext"]
+    "outDir": "./dist"
   },
   "include": ["src"]
 }

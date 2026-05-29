@@ -1,20 +1,20 @@
-import { readFileSync } from "node:fs"
-import { createHash } from "node:crypto"
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 /** 读取文件全部内容，读取失败返回空字符串 */
 export function readFileContent(filePath: string): string {
   try {
-    return readFileSync(filePath, "utf-8")
+    return readFileSync(filePath, 'utf-8')
   }
   catch {
-    return ""
+    return ''
   }
 }
 
 /** LCS diff — 返回增量的变更内容（只包含有变化的行） */
 export function computeDiff(oldContent: string, newContent: string): string | null {
-  const oldLines = oldContent.split("\n")
-  const newLines = newContent.split("\n")
+  const oldLines = oldContent.split('\n')
+  const newLines = newContent.split('\n')
 
   // Build LCS table
   const m = oldLines.length
@@ -26,7 +26,7 @@ export function computeDiff(oldContent: string, newContent: string): string | nu
     return oldContent === newContent ? null : newContent
   }
 
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array.from({ length: n + 1 }).fill(0) as number[])
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
@@ -63,11 +63,12 @@ export function computeDiff(oldContent: string, newContent: string): string | nu
   }
 
   const diffLines = [...removed.reverse(), ...added.reverse()]
-  if (diffLines.length === 0) return null
-  return diffLines.join("\n")
+  if (diffLines.length === 0)
+    return null
+  return diffLines.join('\n')
 }
 
 /** 计算内容的 MD5 hash */
 export function calculateHash(content: string): string {
-  return createHash("md5").update(content).digest("hex")
+  return createHash('md5').update(content).digest('hex')
 }
