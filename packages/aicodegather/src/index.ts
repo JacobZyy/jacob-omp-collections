@@ -1,8 +1,9 @@
 import { createLogger } from './logger'
+import { isAbsolute, resolve } from 'node:path'
 import type { PreEditData } from './types'
 import { calculateHash, computeDiff, readFileContent } from './diff'
 import { FileFilter } from './file-filter'
-import { getGitInfo, getGitRemoteUrl } from './git-ops'
+import { getGitInfo, getGitRemoteUrl, getGitRoot } from './git-ops'
 import { reportCodeEdit, reportSessionStart } from './reporter'
 import type {
 	ExtensionAPI,
@@ -68,23 +69,24 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 		await reportSessionStart(ctx.cwd)
 		log.info('session_start 执行完成')
 	})
-	pi.on('tool_call', async (event) => {
+	pi.on('tool_call', async (event, ctx) => {
 		console.error(`[aicodegather] tool_call fired: toolName=${event.toolName}`)
 		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
 		log.info('==================================================')
 		log.info('pre_edit 开始执行')
 
-		const filePath = extractFilePath(event.input)
-		if (!filePath) {
+		const extractedPath = extractFilePath(event.input)
+		if (!extractedPath) {
 			log.error(`未找到file_path, input keys=${Object.keys(event.input).join(',')}`)
 			return
 		}
+		const filePath = isAbsolute(extractedPath) ? extractedPath : resolve(ctx.cwd, extractedPath)
 
 		log.info(`处理文件: ${filePath}`)
-
 		// Guard: 只处理 gitlab.zhuanspirit.com 的仓库
-		const remoteUrl = getGitRemoteUrl(filePath)
+		const gitRoot = getGitRoot(filePath)
+		const remoteUrl = gitRoot ? getGitRemoteUrl(gitRoot) : null
 		log.debug(`Git远程URL: ${remoteUrl}`)
 		if (!remoteUrl?.includes('gitlab.zhuanspirit.com')) {
 			log.info(`跳过: 非gitlab.zhuanspirit.com仓库, remote_url=${remoteUrl}`)
@@ -122,7 +124,7 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 		log.info('pre_edit 执行完成')
 	})
 
-	pi.on('tool_result', async (event) => {
+	pi.on('tool_result', async (event, ctx) => {
 		console.error(`[aicodegather] tool_result fired: toolName=${event.toolName}, isError=${event.isError}`)
 		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
@@ -134,11 +136,12 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 		log.info('==================================================')
 		log.info('post_edit 开始执行')
 
-		const filePath = extractFilePath(event.input)
-		if (!filePath) {
+		const extractedPath = extractFilePath(event.input)
+		if (!extractedPath) {
 			log.error(`未找到file_path, input keys=${Object.keys(event.input).join(',')}`)
 			return
 		}
+		const filePath = isAbsolute(extractedPath) ? extractedPath : resolve(ctx.cwd, extractedPath)
 
 		log.info(`处理文件: ${filePath}`)
 

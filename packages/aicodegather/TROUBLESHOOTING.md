@@ -1,188 +1,259 @@
-# aicodegather OMP Extension — 未解决问题文档
+# aicodegather OMP Extension — 排查记录
 
-> 最后更新：2026-05-29，当前版本 1.5.0，commit `6d0b621`
+> 最后更新：2026-05-29，当前源码版本 1.4.3（commit `b44cff5`，已回退 1.5.0）
 
 ## 问题现状
 
-Extension 的 `session_start` 事件正常触发并上报成功，但 `tool_call` 和 `tool_result` 事件完全不触发。即使加了 `console.error()` 也无任何输出，说明 handler 从未被执行。
+`tool_call` 和 `tool_result` 事件未在 hook.log 中出现。
 
-## 已确认的事实
+## 已确认的结论
 
-### 能工作的版本
+### 1. 插件代码本身没有问题 ✅（已验证）
 
-`2c925138` (v1.3.0) — tool_call 能触发，日志中有 `[DIAG] [tool_call] toolName=edit` 输出。但 filePath 提取失败（`filePath=undefined`），因为当时用的是 `event.input?.file_path` 而非 `event.input?.path`。
+在 `omp-integration.test.ts` 中完整模拟了 OMP 运行时的调用链：
 
-### 不能工作的版本
+- `ConcreteExtensionAPI.on()` → handler 存入 `extension.handlers` Map
+- `ExtensionRunner.emitToolCall()` → 遍历 extensions 取 handlers 调用
+- `ExtensionRunner.emitToolResult()` → 同上
+- `hasHandlers("tool_call")` → 检查 Map
 
-`4f47151` (v1.4.0) 及之后所有版本（1.4.0 ~ 1.5.0），tool_call / tool_result 完全不触发。
+**全部 13 个测试通过**，包括：
+- `export default` 是 function ✅
+- 注册了 `session_start` / `tool_call` / `tool_result` 三个 handler ✅
+- `tool_call` handler 在 edit/write 工具调用时正确触发 ✅
+- `hasHandlers("tool_call")` 返回 true ✅
+- `console.error` 输出了 `[aicodegather] tool_call fired: toolName=edit` ✅
 
-### 1.3.0 → 1.4.0 的变更
+**结论：问题不在插件代码，而在 OMP 侧的加载/运行环境。**
 
-1. **引入 `omp-types.ts` 类型桥接文件**（纯 interface/type，运行时擦除）
-2. **Factory 签名**：从 `export default function aicodegather(pi: { on: ... })` 改为 `const aicodegather: ExtensionFactory = (pi: ExtensionAPI) => { ... }; export default aicodegather`
-3. **filePath 提取**：从 `event.input?.file_path ?? event.input?.path` 改为 `extractFilePath(event.input)` 函数
-4. **移除 `diag()` 诊断函数**
-5. **修复 `getGitNamespace()` regex bug**
-
-### 1.5.0 的回退尝试
-
-已回退到 1.3.0 的 `export default function` + 内联 `pi` 类型签名，保留新的 `extractFilePath` 逻辑和完整日志。**问题仍然存在**。
-
-### Plugin 加载确认
-
-- `~/.omp/plugins/installed_plugins.json` 正确记录插件（v1.4.3/1.5.0）
-- `~/.omp/plugins/cache/plugins/jacob-omp-collections___aicodegather___1.5.0/` 目录存在且 `src/index.ts` 可读
-- `session_start` handler 正常触发（日志中有 `aicodegather extension loaded` + `session start: cwd=...`）
-- 但同一 factory 函数中注册的 `tool_call` / `tool_result` handler 从未被调用
-
-### Symlink 问题（已修复但仍反复出现）
-
-OMP `marketplace update` 流程：
-1. `cachePlugin()` 创建新版本缓存目录（如 `___aicodegather___1.5.0`）
-2. 删除旧版本缓存目录
-3. 更新 `installed_plugins.json`
-
-但 **不会更新 `node_modules/@jacob-omp-collections/aicodegather` symlink**。每次 update 后 symlink dangling，需要手动修复：
-
-```bash
-ln -sf ~/.omp/plugins/cache/plugins/jacob-omp-collections___aicodegather___1.5.0 \
-       ~/.omp/plugins/node_modules/@jacob-omp-collections/aicodegather
-```
-
-不过 symlink 断裂时 session_start 也不会触发，所以当前问题与 symlink 无关。
-
-## OMP Extension 加载机制（源码分析）
-
-### 插件发现
-
-1. `discoverAndLoadExtensions()` (`loader.ts:484`) 调用 `getAllPluginExtensionPaths(cwd)`
-2. `getAllPluginExtensionPaths()` → `getEnabledPlugins(cwd)` → 读取 `~/.omp/plugins/package.json` 的 `dependencies`
-3. 对每个 plugin 读取 `node_modules/<name>/package.json` 的 `omp.extensions` 字段
-4. `resolveManifestEntryFile()` 用 `fs.statSync()` 解析路径（dangling symlink 返回 null）
-
-### Extension 加载
-
-1. `loadExtension()` (`loader.ts:277`) 用 `loadLegacyPiModule()` import TS 文件
-2. `getExtensionFactory()` 检查 module.default 是否为 function
-3. 创建 `ConcreteExtensionAPI`，调用 `factory(api)`
-4. Factory 中的 `pi.on('tool_call', handler)` 注册到 `extension.handlers` Map
-
-### 事件触发
-
-1. 每个工具被 `ExtensionToolWrapper` 包裹（`sdk.ts:1526`）
-2. 工具执行前 `wrapper.execute()` 调用 `runner.emitToolCall()`
-3. `emitToolCall()` 遍历所有 extension 的 `handlers.get("tool_call")` 并调用
-
-### 关键代码路径
+### 2. 当前环境状态：symlink broken，插件根本无法加载
 
 ```
-sdk.ts:1526  →  new ExtensionToolWrapper(tool, runner)  // 包裹每个工具
-wrapper.ts:146  →  if (this.runner.hasHandlers("tool_call"))  // 检查是否有 handler
-wrapper.ts:148  →  await this.runner.emitToolCall({...})  // 触发事件
-runner.ts:618  →  for (ext of this.extensions) { ext.handlers.get("tool_call") }  // 查找 handler
+~/.omp/plugins/ 状态三处不一致：
+
+installed_plugins.json → 1.5.0
+package.json deps      → 1.4.3
+symlink target         → 1.4.3 (目录不存在，只有 1.5.0 缓存)
 ```
 
-## 已排除的原因
+`resolveManifestEntryFile()` 使用 `fs.statSync()` 跟随 symlink → 目标不存在 → 返回 null → **插件不会被发现**。
 
-| 假设 | 排除依据 |
-|------|---------|
-| omp-types.ts import 导致运行时错误 | 纯 type 文件，运行时擦除；1.5.0 已去掉该 import |
-| `const` vs `function` export 方式 | Bun import 两种方式的 `.default` 都是 function |
-| Extension 加载失败（异常被吞） | session_start 正常触发，说明 factory 已执行 |
-| Handler 未注册 | pi.on() 在 session_start 同一 factory 中调用，session_start 成功说明注册代码已执行 |
-| Symlink 断裂 | 修复后 session_start 能触发，但 tool_call 仍不触发 |
-| 插件版本不匹配 | 已多次确认 symlink 和 package.json 指向正确版本 |
-| `console.error` 被吞 | 不太可能，stderr 不经过 OMP 日志系统 |
+### 3. OMP 运行时版本确认
 
-## 未验证的假设
+- 运行中的 OMP：v15.5.10（通过 `~/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/`）
+- 源码 workspace：同版本 v15.5.10，`sdk.ts` 行数一致（2212 行）
+- **源码和运行版本一致，不存在版本差异问题**
 
-1. **`runner.hasHandlers("tool_call")` 返回 false** — 可能 extensions 数组为空或 handlers Map 未正确填充。需要 OMP 侧加日志确认。
-2. **ExtensionToolWrapper 未包裹 edit/write 工具** — 可能 `toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, runner))` 未执行到 edit/write。
-3. **多 ExtensionRunner 实例** — session_start 走一个 runner，tool_call 走另一个。需要确认 sdk.ts 中 runner 是否为单例。
-4. **OMP 版本问题** — 当前 oh-my-pi 的代码可能和运行的 OMP 二进制版本不一致（当前 workspace 是 oh-my-pi 源码，但运行的 OMP 可能是已安装的 release 版本）。
-5. **loadLegacyPiModule 行为差异** — 这个函数对 `export default function` 和 `export default constVariable` 可能有不同处理。
+### 4. OMP Extension 事件触发链路（源码追踪）
 
-## 建议的下一步排查
-
-1. **确认运行中的 OMP 版本**：检查 `omp --version` 或 OMP 启动日志，确认用的是源码编译版还是 release 版
-2. **在 OMP 侧加日志**：在 `wrapper.ts:146` 行加 `console.error`，确认 `hasHandlers("tool_call")` 的结果
-3. **在 OMP 侧加日志**：在 `runner.ts:392` `hasHandlers()` 方法中打印 `this.extensions` 内容
-4. **在 OMP 侧加日志**：在 `sdk.ts:1526` 包裹工具时打印工具名和 runner 的 extensions 数量
-5. **检查 edit 工具是否被特殊处理**：`sdk.ts:1528` 有 `if (model?.provider === "cursor") toolRegistry.delete("edit")`，确认 provider 不是 cursor
-
-## Python Hooks（旧方案，仍在运行）
-
-当前 `~/.claude/settings.json` 仍配置了三个 Python hooks：
-
-- `PreToolUse` (Edit|Write) → `pre_edit.py`
-- `PostToolUse` (Edit|Write) → `post_edit.py`
-- `SessionStart` → `session_start.py`
-
-这些 hooks 工作正常，日志输出到 `/tmp/aicodegather/logs/hook.log`。
-
-Python hooks 和 OMP extension 共存时，两者都会触发 session_start。但 Python hooks 的 tool_call 事件走 Claude hooks 机制，OMP extension 的走 OMP extension 机制，互不影响。
-
-## 日志对比表：Python Hooks vs TS Extension
-
-| 阶段 | Python hook 日志点 | TS extension (1.5.0) 日志点 | 状态 |
-|------|-------------------|---------------------------|------|
-| **session_start** | | | |
-| 开始 | `==================================================` + `session_start 开始执行` | ✅ 同上 | ✅ |
-| cwd | `session start: cwd=...` | ✅ 同上 | ✅ |
-| 用户信息 | `[DEBUG] 获取用户信息: user_name=..., env=..., ip=..., version=...` | ⚠️ 有但缺 ip（OMP 环境无 netifaces） | ⚠️ |
-| 发送埋点 | `========== 发送埋点 ==========` | ✅ 同上 | ✅ |
-| URL/payload | `[DEBUG] URL: ... / payload: ...` | ✅ 同上 | ✅ |
-| 响应状态码 | `[DEBUG] 响应状态码: ...` | ✅ 同上 | ✅ |
-| 响应 body | `[DEBUG] 响应body: ...` | ✅ 已补充 | ✅ |
-| 成功 | `埋点发送成功` | ✅ 同上 | ✅ |
-| 失败 | `埋点发送失败: status_code=...` | ✅ 同上 | ✅ |
-| 完成 | `session_start 执行完成` | ✅ 同上 | ✅ |
-| **pre_edit (tool_call)** | | | |
-| 开始 | `==================================================` + `pre_edit 开始执行` | ✅ 同上 | ⚠️ 不触发 |
-| 解析失败 | `[ERROR] 未找到file_path` | ✅ 含 input keys | ⚠️ 不触发 |
-| 文件路径 | `[INFO] 处理文件: ...` | ✅ 同上 | ⚠️ 不触发 |
-| Git remote | `[DEBUG] Git远程URL: ...` | ✅ 同上 | ⚠️ 不触发 |
-| 跳过非gitlab | `[INFO] 跳过: 非gitlab仓库, remote_url=...` | ✅ 同上 | ⚠️ 不触发 |
-| 跳过过滤文件 | `[INFO] 跳过: 文件不在过滤范围内, file_path=...` | ✅ 同上 | ⚠️ 不触发 |
-| 文件内容 | `[DEBUG] 读取文件内容: length=..., file_path=...` | ✅ 同上 | ⚠️ 不触发 |
-| Git信息 | `[DEBUG] Git信息: {...}` | ✅ 同上 | ⚠️ 不触发 |
-| 相对路径 | `[DEBUG] 相对路径: ...` | ✅ 同上 | ⚠️ 不触发 |
-| 保存缓存 | `[INFO] 保存临时文件: ...`（TS: `pre-edit cached: ...`） | ✅ 等价 | ⚠️ 不触发 |
-| 完成 | `pre_edit 执行完成` | ✅ 同上 | ⚠️ 不触发 |
-| **post_edit (tool_result)** | | | |
-| 开始 | `==================================================` + `post_edit 开始执行` | ✅ 同上 | ⚠️ 不触发 |
-| 解析失败 | `[ERROR] 未找到file_path` | ✅ 同上 | ⚠️ 不触发 |
-| 文件路径 | `[INFO] 处理文件: ...` | ✅ 同上 | ⚠️ 不触发 |
-| 跳过过滤 | `[INFO] 跳过: 文件不在过滤范围内` | ✅ 同上 | ⚠️ 不触发 |
-| pre数据缺失 | `[ERROR] 未找到pre_edit数据: ...` | ✅ 同上 | ⚠️ 不触发 |
-| 读pre数据 | `[DEBUG] 读取pre数据: ...` | ✅ 同上 | ⚠️ 不触发 |
-| after内容 | `[DEBUG] 读取after内容: length=...` | ✅ 同上 | ⚠️ 不触发 |
-| diff计算 | `[DEBUG] 计算diff: diff_length=...` | ✅ 同上 | ⚠️ 不触发 |
-| diff为空 | `[INFO] diff为空，跳过` | ✅ 同上 | ⚠️ 不触发 |
-| 组装数据 | `[DEBUG] 组装数据: {...}` | ✅ 已补充 | ⚠️ 不触发 |
-| 开始上报 | `[INFO] 开始立即上报: batch_id=...` | ✅ `开始立即上报: filePath=...` | ⚠️ 不触发 |
-| URL/payload | `[DEBUG] URL/payload: ...` | ✅ 同上 | ⚠️ 不触发 |
-| 上报成功 | `[INFO] 立即上报成功: batch_id=...` | ✅ `立即上报成功: ...` | ⚠️ 不触发 |
-| 上报失败 | `[WARNING] 立即上报失败，启动补偿进程` | ⚠️ `加入重试队列`（内存重试，无独立进程） | ⚠️ 不触发 |
-| isError跳过 | — | ✅ `isError=true, 跳过` | ⚠️ 不触发 |
-| 完成 | `post_edit 执行完成` | ✅ 同上 | ⚠️ 不触发 |
-
-## marketplace update 后手动修复步骤
-
-每次 `/marketplace update jacob-omp-collections` 后需要执行：
-
-```bash
-# 1. 查看最新缓存版本
-ls ~/.omp/plugins/cache/plugins/
-
-# 2. 更新 symlink（替换版本号）
-ln -sf ~/.omp/plugins/cache/plugins/jacob-omp-collections___aicodegather___<VERSION> \
-       ~/.omp/plugins/node_modules/@jacob-omp-collections/aicodegather
-
-# 3. 更新 package.json（替换版本号）
-cat > ~/.omp/plugins/package.json << EOF
-{"name":"omp-plugins","private":true,"dependencies":{"dir-entry-plugin":"1.0.0","@jacob-omp-collections/aicodegather":"<VERSION>"}}
-EOF
-
-# 4. 重启 OMP session
 ```
+工具执行：
+  sdk.ts:1526  →  toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner))
+  wrapper.ts:106  →  ExtensionToolWrapper.execute(toolCallId, params, ...)
+  wrapper.ts:146  →  if (this.runner.hasHandlers("tool_call"))
+  wrapper.ts:148  →  await this.runner.emitToolCall({ type, toolName, toolCallId, input })
+  runner.ts:614   →  emitToolCall() 遍历 this.extensions → ext.handlers.get("tool_call")
+  loader.ts:138   →  ConcreteExtensionAPI.on(event, handler) 存入 extension.handlers Map
+
+session_start 触发（交互模式）：
+  extension-ui-controller.ts:234  →  extensionRunner.initialize(...)
+  extension-ui-controller.ts:242  →  await extensionRunner.emit({ type: "session_start" })
+
+tool_call 触发：
+  每次 AgentTool.execute() 被调用时 → ExtensionToolWrapper.execute() → emitToolCall()
+  使用同一个 extensionRunner 实例
+```
+
+同一个 `extensionRunner` 实例贯穿全程（sdk.ts 创建 → 传给 AgentSession → 传给 ExtensionToolWrapper）。
+
+### 5. `loadLegacyPiModule` 行为
+
+OMP 不会直接 import 插件源文件。而是：
+1. 读源文件文本
+2. 重写 imports（`@oh-my-pi/*` → 本地路径、相对路径 → 镜像路径、bare imports → 解析路径）
+3. 写入 `/tmp/omp-legacy-pi-file/` 临时文件
+4. `import(mirroredPath + ?mtime=...)` 加载镜像文件
+
+这个重写过程**不影响 export default 的值**，仅改 import 路径。`import type` 在运行时完全擦除，不受影响。
+
+## 历史版本对比
+
+### v1.3.0（能工作）
+```ts
+// export default function，内联 pi 类型
+export default function aicodegather(pi: {
+  on: ((event: 'session_start', handler: ...) => void) &
+      ((event: 'tool_call', handler: ...) => void) &
+      ((event: 'tool_result', handler: ...) => void)
+}): void {
+  // diag() 直接写 /tmp/aicodegather/logs/hook.log
+  // filePath 用 event.input?.file_path ?? event.input?.path
+}
+```
+
+### v1.4.3（当前源码，symlink broken 无法实际验证）
+```ts
+// const + type import
+import type { ExtensionAPI, ExtensionFactory } from './omp-types'
+const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
+  // log.info() 写 /tmp/aicodegather/logs/hook.log
+  // filePath 用 extractFilePath(event.input)
+}
+export default aicodegather
+```
+
+### v1.5.0（回退 export default function，symlink broken 无法验证）
+```ts
+export default function aicodegather(pi: {
+  on: ...
+}): void {
+  // 同 v1.3.0 的 export 形式，但用新的 extractFilePath 逻辑
+}
+```
+
+## 日志时间线分析
+
+```
+08:04 ~ 08:44  v1.3.0 活跃
+  [DIAG] [module-top] aicodegather module evaluated    ← diag() 输出
+  [DIAG] [tool_call] toolName=edit                     ← tool_call 正常触发
+  [DIAG] [tool_call-path] filePath=undefined           ← edit 的 filePath 提取失败
+  [DIAG] [tool_call-path] filePath=/Users/.../foo.ts   ← write 的 filePath 正常
+
+08:50 ~         v1.4.3/1.5.0 活跃
+  [INFO] [index] aicodegather extension loaded         ← factory 执行了
+  [INFO] [index] session start: cwd=...                ← session_start 触发了
+  ❌ 没有 tool_call / tool_result 日志                  ← 问题！
+```
+
+## 根本原因分析（待验证）
+
+### 假设 A：symlink 在 08:50 时已经是 broken 的
+
+如果 symlink broken，OMP 通过 `getAllPluginExtensionPaths()` 根本发现不了插件。但日志显示 `session_start` 触发了。
+
+**可能解释**：OMP 有 fallback 的 extension 发现路径（`~/.omp/agent/extensions/` 或 settings `extensions` 数组），或者之前 symlink 有效但之后变了。
+
+### 假设 B：`loadLegacyPiModule` 重写导致的问题
+
+v1.3.0 有顶层副作用代码 `diag('module-top', ...)`，日志中可见 `[DIAG] [module-top]`。v1.4.3+ 没有顶层副作用。如果 `loadLegacyPiModule` 的重写过程**因为某种 import 解析失败**导致 factory 没有被正确调用，但模块加载成功（返回了一个不完整的对象），那么：
+- `getExtensionFactory()` 会返回 null → 扩展不会被加载 → `session_start` 也不会触发
+
+这与日志矛盾（session_start 触发了），所以此假设不成立。
+
+### 假设 C：`ConcreteExtensionAPI.on()` 的泛型签名问题
+
+v1.4.3 使用 `import type { ExtensionAPI } from './omp-types'`。运行时 `ConcreteExtensionAPI.on()` 的签名是：
+```ts
+on<F extends HandlerFn>(event: string, handler: F): void
+```
+
+v1.3.0 的 `pi.on` 类型签名是内联的交叉类型。但 TypeScript 类型在运行时擦除，不影响行为。**已排除。**
+
+### 假设 D：最有可能是 OMP 运行时环境的特定问题
+
+由于：
+1. 插件代码在模拟测试中完全正常
+2. `session_start` 能触发说明 factory 确实执行了，handlers 确实注册了
+3. `tool_call` 不触发说明 `ExtensionToolWrapper.execute()` 的 `hasHandlers("tool_call")` 返回了 false
+
+**最可能的原因是：OMP 运行时中使用的 `extensionRunner` 实例和注册 handlers 时的不是同一个。**
+
+具体来说：`sdk.ts:1470` 创建 `ExtensionRunner`，其 `extensions` 数组包含加载的插件。但 `ConcreteExtensionAPI.on()` 注册 handlers 到 `this.extension.handlers`，这个 `extension` 对象也在 `extensions` 数组中。只要 `extensionRunner` 是同一个实例，handlers 就能被找到。
+
+**除非存在某种模块重复加载**（Bun import 两次返回不同的模块实例），导致 factory 中的 `pi.on()` 注册到了 extension A，但 runner 遍历的是 extension B。
+
+## 下一步行动
+
+### 立即要做的
+
+1. **修复 symlink 和 package.json**：
+   ```bash
+   # 修复 symlink 指向实际存在的 1.5.0 缓存
+   ln -sf ~/.omp/plugins/cache/plugins/jacob-omp-collections___aicodegather___1.5.0 \
+          ~/.omp/plugins/node_modules/@jacob-omp-collections/aicodegather
+
+   # 更新 package.json 使版本一致
+   cat > ~/.omp/plugins/package.json << 'EOF'
+   {"name":"omp-plugins","private":true,"dependencies":{"dir-entry-plugin":"1.0.0","@jacob-omp-collections/aicodegather":"1.5.0"}}
+   EOF
+   ```
+
+2. **重启 OMP 并测试**：看 hook.log 中是否有 tool_call 日志
+
+### 如果修复 symlink 后 tool_call 仍不触发
+
+3. **在 OMP 源码中加临时诊断日志**：
+   - `packages/coding-agent/src/extensibility/extensions/wrapper.ts:146` — 打印 `hasHandlers` 结果和 `this.runner.extensions` 长度
+   - `packages/coding-agent/src/extensibility/extensions/runner.ts:392` — 在 `hasHandlers()` 中打印 `this.extensions` 的 handlers keys
+
+4. **验证 loadLegacyPiModule 的镜像文件**：
+   ```bash
+   # 在 OMP 运行时检查临时目录
+   ls /tmp/omp-legacy-pi-file/
+   # 查看镜像后的文件内容
+   cat /tmp/omp-legacy-pi-file/module-*.ts
+   ```
+
+5. **或者：绕过 marketplace，用 `--extension` 参数直接加载源文件**：
+   ```bash
+   omp --extension ~/Documents/workspace/jacob-open-source/jacob-omp-collections/packages/aicodegather/src/index.ts
+   ```
+   这跳过了 `loadLegacyPiModule` 的重写过程，直接 import 源文件。如果 tool_call 触发了，问题就在 `loadLegacyPiModule` 的重写逻辑。
+
+### 如果需要在 OMP 源码中加诊断
+
+在 `packages/coding-agent/src/extensibility/extensions/wrapper.ts` 的 `execute` 方法中（约 line 146）：
+
+```ts
+// 临时诊断
+console.error(`[DIAG-WRAPPER] tool=${this.tool.name}, hasHandlers=${this.runner.hasHandlers("tool_call")}`);
+```
+
+在 `packages/coding-agent/src/extensibility/extensions/runner.ts` 的 `hasHandlers` 方法中（约 line 392）：
+
+```ts
+hasHandlers(eventType: string): boolean {
+    console.error(`[DIAG-RUNNER] hasHandlers(${eventType}), extensions=${this.extensions.length}`);
+    for (const ext of this.extensions) {
+        const handlers = ext.handlers.get(eventType);
+        console.error(`[DIAG-RUNNER]   ext=${ext.path}, handlerKeys=[${[...ext.handlers.keys()].join(',')}]`);
+        if (handlers && handlers.length > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+## OMP Extension 加载机制（源码速查）
+
+```
+discoverAndLoadExtensions(configuredPaths, cwd)
+  → getAllPluginExtensionPaths(cwd)          // 读 package.json deps → resolveManifestEntryFile → fs.statSync
+  → loadExtensions(paths, cwd)
+    → for each path: loadExtension(path, cwd, eventBus, runtime)
+      → loadLegacyPiModule(resolvedPath)     // 重写 imports，写入 /tmp 镜像文件，import 镜像
+      → getExtensionFactory(module)           // module.default ?? module，检查是 function
+      → createExtension(path, resolvedPath)   // { handlers: new Map(), ... }
+      → new ConcreteExtensionAPI(piCodingAgent, extension, runtime, cwd, eventBus)
+      → factory(api)                          // 执行工厂函数，pi.on() 注册 handlers
+    → new ExtensionRunner(extensions, runtime, cwd, sessionManager, modelRegistry)
+
+sdk.ts:1525-1526  // 包裹所有工具
+  for (const tool of toolRegistry.values()) {
+    toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner))
+  }
+
+ExtensionToolWrapper.execute(toolCallId, params, ...)
+  → this.runner.hasHandlers("tool_call")     // runner.ts:392 遍历 extensions 检查 handlers Map
+  → this.runner.emitToolCall({...})           // runner.ts:614 遍历 extensions 调用 handlers
+```
+
+## 单测文件
+
+- `src/index.test.ts` — `extractFilePath` 的 12 个单元测试
+- `src/omp-integration.test.ts` — **模拟 OMP 完整调用链的 13 个集成测试**（全部通过）
+- `src/diff.test.ts`、`src/file-filter.test.ts`、`src/git-ops.test.ts` — 其他单元测试
+
+全部 45 + 13 = 58 个测试通过。
