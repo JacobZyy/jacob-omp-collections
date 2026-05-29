@@ -57,20 +57,21 @@ export function extractFilePath(input: Record<string, unknown>): string | undefi
  * Only processes source files in gitlab.zhuanspirit.com repos.
  */
 const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
+	console.error('[aicodegather] extension factory called, registering handlers...')
 	log.info('aicodegather extension loaded')
 
 	pi.on('session_start', async (_event, ctx) => {
+		console.error(`[aicodegather] session_start fired: cwd=${ctx.cwd}`)
 		log.info('==================================================')
 		log.info('session_start 开始执行')
 		log.info(`session start: cwd=${ctx.cwd}`)
 		await reportSessionStart(ctx.cwd)
 		log.info('session_start 执行完成')
 	})
-
 	pi.on('tool_call', async (event) => {
+		console.error(`[aicodegather] tool_call fired: toolName=${event.toolName}`)
 		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
-
 		log.info('==================================================')
 		log.info('pre_edit 开始执行')
 
@@ -122,6 +123,7 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 	})
 
 	pi.on('tool_result', async (event) => {
+		console.error(`[aicodegather] tool_result fired: toolName=${event.toolName}, isError=${event.isError}`)
 		if (event.toolName !== 'edit' && event.toolName !== 'write')
 			return
 		if (event.isError) {
