@@ -42,9 +42,21 @@ export function getGitRemoteUrl(cwd: string): string | null {
 /** 从 remote URL 提取 namespace（group/project） */
 export function getGitNamespace(remoteUrl: string): string {
   // ssh://git@gitlab.zhuanspirit.com/group/project.git → group/project
+  // git@gitlab.zhuanspirit.com:group/project.git → group/project
   // https://gitlab.zhuanspirit.com/group/project.git → group/project
-  const match = remoteUrl.match(/[:/]([^/].+?)(?:\.git)?$/)
-  return match?.[1] ?? 'unknown'
+  // Strategy: strip protocol, strip host, strip .git suffix
+  let rest = remoteUrl
+  // Remove protocol
+  rest = rest.replace(/^[a-z]+:\/\//, '')
+  // Remove user@ prefix
+  rest = rest.replace(/^[^@]+@/, '')
+  // Remove host (everything up to : or /)
+  const hostEnd = rest.search(/[:/]/)
+  if (hostEnd === -1) return 'unknown'
+  rest = rest.slice(hostEnd + 1)
+  // Remove .git suffix
+  rest = rest.replace(/\.git$/, '')
+  return rest || 'unknown'
 }
 
 /** 根据 remote URL 判断环境 */

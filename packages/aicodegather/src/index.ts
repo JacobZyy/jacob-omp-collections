@@ -1,129 +1,135 @@
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { createLogger } from './logger'
 import type { PreEditData } from './types'
 import { calculateHash, computeDiff, readFileContent } from './diff'
 import { FileFilter } from './file-filter'
 import { getGitInfo, getGitRemoteUrl } from './git-ops'
-import { createLogger } from './logger'
 import { reportCodeEdit, reportSessionStart } from './reporter'
-
-// ── 诊断辅助：无条件写日志到 /tmp/aicodegather/logs/hook.log ──────────
-const DIAG_DIR = '/tmp/aicodegather/logs'
-function diag(tag: string, msg: string): void {
-  try {
-    if (!existsSync(DIAG_DIR))
-      mkdirSync(DIAG_DIR, { recursive: true })
-    const ts = new Date().toISOString().replace('T', ' ').replace('Z', '')
-    appendFileSync(join(DIAG_DIR, 'hook.log'), `[${ts}] [DIAG] [${tag}] ${msg}\n`, 'utf-8')
-  }
-  catch {}
-}
-
-// [DIAG] 模块顶层 — 如果看不到这行，说明 OMP 没有加载此文件
-diag('module-top', 'aicodegather module evaluated (top-level)')
+import type {
+	ExtensionAPI,
+	ExtensionFactory,
+} from './omp-types'
 
 const log = createLogger('index')
 const preEditCache = new Map<string, PreEditData>()
 
 /**
- * OMP Extension 入口
+ * Extract the file path from a tool_call event input.
  *
- * 事件映射：
- *   session_start  → 上报 session 埋点
- *   tool_call      → 记录编辑前文件内容
- *   tool_result    → 计算 diff 并上报
+ * OMP's edit tool accepts 4 schema modes:
+ * - replace/patch: `{ path: string, edits: [...] }`  → direct `path` field
+ * - hashline:      `{ input: "¶path#hash\n..." }`    → parse hashline envelope
+ * - apply-patch:   `{ input: "*** Add File: path" }`  → parse apply-patch envelope
  *
- * 仅处理 gitlab.zhuanspirit.com 仓库下的源码文件。
+ * Write tool always has `{ path: string, content: string }`.
  */
-export default function aicodegather(pi: {
-  on: ((event: 'session_start', handler: (event: unknown, ctx: { cwd: string }) => Promise<void>) => void) & ((event: 'tool_call', handler: (event: { toolName: string, input?: Record<string, unknown> }) => Promise<void>) => void) & ((event: 'tool_result', handler: (event: { toolName: string, input?: Record<string, unknown>, isError?: boolean }) => Promise<void>) => void)
-}): void {
-  diag('entry', `aicodegather() called, pi.on type=${typeof pi.on}`)
-  log.info('aicodegather extension loaded')
+export function extractFilePath(input: Record<string, unknown>): string | undefined {
+	// Direct `path` field (replace/patch modes of edit, and write tool)
+	const directPath = input['path']
+	if (typeof directPath === 'string' && directPath)
+		return directPath
 
-  // Session 启动埋点
-  pi.on('session_start', async (_event, ctx) => {
-    diag('session_start', `fired, cwd=${ctx.cwd}`)
-    log.info(`session start: cwd=${ctx.cwd}`)
-    await reportSessionStart(ctx.cwd)
-  })
+	// Hashline / apply-patch modes: `input` is a raw string containing the path
+	const rawInput = input['input']
+	if (typeof rawInput !== 'string' || !rawInput)
+		return undefined
 
-  // 编辑前：记录当前文件内容
-  pi.on('tool_call', async (event) => {
-    diag('tool_call', `toolName=${event.toolName}`)
+	// Hashline: ¶path#hash or §path#hash or @path#hash
+	const hashlineMatch = /^(?:¶|§|@)([^\s#]+)/m.exec(rawInput)
+	if (hashlineMatch?.[1])
+		return hashlineMatch[1]
 
-    if (!['edit', 'write'].includes(event.toolName))
-      return
+	// Apply-patch: *** Add/Update/Delete File: path
+	const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(rawInput)
+	if (applyPatchMatch?.[1])
+		return applyPatchMatch[1].trim()
 
-    const filePath = event.input?.file_path ?? event.input?.path as string | undefined
-    diag('tool_call-path', `filePath=${filePath ?? 'undefined'}`)
-
-    if (typeof filePath !== 'string' || !filePath)
-      return
-
-    const shouldProcess = FileFilter.shouldProcess(filePath)
-    diag('tool_call-filter', `shouldProcess=${shouldProcess}, filePath=${filePath}`)
-    if (!shouldProcess)
-      return
-
-    // 检查是否 gitlab.zhuanspirit.com 仓库
-    const remoteUrl = getGitRemoteUrl(filePath)
-    diag('tool_call-remote', `remoteUrl=${remoteUrl ?? 'undefined'}`)
-    if (!remoteUrl?.includes('gitlab.zhuanspirit.com'))
-      return
-
-    const content = readFileContent(filePath)
-    const gitInfo = getGitInfo(filePath)
-    const relativePath = gitInfo.namespace
-      ? filePath.replace(/^.*?(?=packages\/|src\/)/, '')
-      : filePath
-
-    log.info(`pre-edit cached: ${filePath} (${content.length} chars)`)
-    diag('tool_call-cached', `pre-edit cached: ${filePath} (${content.length} chars)`)
-    preEditCache.set(filePath, {
-      content,
-      gitInfo,
-      relativePath,
-      timestamp: Date.now(),
-    })
-  })
-
-  // 编辑后：计算 diff 并上报
-  pi.on('tool_result', async (event) => {
-    diag('tool_result', `toolName=${event.toolName}, isError=${event.isError}`)
-
-    if (!['edit', 'write'].includes(event.toolName) || event.isError)
-      return
-
-    const filePath = event.input?.file_path ?? event.input?.path as string | undefined
-    if (typeof filePath !== 'string' || !filePath)
-      return
-
-    const preData = preEditCache.get(filePath)
-    diag('tool_result-cache', `filePath=${filePath}, cacheHit=${!!preData}`)
-    if (!preData)
-      return
-    preEditCache.delete(filePath)
-
-    const afterContent = readFileContent(filePath)
-    const diff = computeDiff(preData.content, afterContent)
-    if (!diff) {
-      log.debug(`no diff for: ${filePath}`)
-      return
-    }
-
-    log.info(`post-edit diff: ${filePath} (${diff.length} chars)`)
-    diag('tool_result-report', `reporting diff for ${filePath} (${diff.length} chars)`)
-    await reportCodeEdit({
-      namespace: preData.gitInfo.namespace,
-      branchName: preData.gitInfo.branch,
-      gitName: preData.gitInfo.user,
-      code: diff,
-      filePath: preData.relativePath,
-      hash: calculateHash(diff),
-      env: preData.gitInfo.env,
-      source: 'claude-code-extension',
-      aiType: 2,
-    })
-  })
+	return undefined
 }
+
+/**
+ * OMP Extension entry point.
+ *
+ * Events:
+ *   session_start  → report session telemetry
+ *   tool_call      → cache file content before edit/write
+ *   tool_result    → compute diff and report after edit/write
+ *
+ * Only processes source files in gitlab.zhuanspirit.com repos.
+ */
+const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
+	log.info('aicodegather extension loaded')
+
+	pi.on('session_start', async (_event, ctx) => {
+		log.info(`session start: cwd=${ctx.cwd}`)
+		await reportSessionStart(ctx.cwd)
+	})
+
+	pi.on('tool_call', async (event) => {
+		if (event.toolName !== 'edit' && event.toolName !== 'write')
+			return
+
+		const filePath = extractFilePath(event.input)
+		if (!filePath)
+			return
+
+		if (!FileFilter.shouldProcess(filePath))
+			return
+
+		// Only gitlab.zhuanspirit.com repos
+		const remoteUrl = getGitRemoteUrl(filePath)
+		if (!remoteUrl?.includes('gitlab.zhuanspirit.com'))
+			return
+
+		const content = readFileContent(filePath)
+		const gitInfo = getGitInfo(filePath)
+		const relativePath = gitInfo.namespace
+			? filePath.replace(/^.*?(?=packages\/|src\/)/, '')
+			: filePath
+
+		log.info(`pre-edit cached: ${filePath} (${content.length} chars)`)
+		preEditCache.set(filePath, {
+			content,
+			gitInfo,
+			relativePath,
+			timestamp: Date.now(),
+		})
+	})
+
+	pi.on('tool_result', async (event) => {
+		if (event.toolName !== 'edit' && event.toolName !== 'write')
+			return
+		if (event.isError)
+			return
+
+		const filePath = extractFilePath(event.input)
+		if (!filePath)
+			return
+
+		const preData = preEditCache.get(filePath)
+		if (!preData)
+			return
+		preEditCache.delete(filePath)
+
+		const afterContent = readFileContent(filePath)
+		const diff = computeDiff(preData.content, afterContent)
+		if (!diff) {
+			log.debug(`no diff for: ${filePath}`)
+			return
+		}
+
+		log.info(`post-edit diff: ${filePath} (${diff.length} chars)`)
+		await reportCodeEdit({
+			namespace: preData.gitInfo.namespace,
+			branchName: preData.gitInfo.branch,
+			gitName: preData.gitInfo.user,
+			code: diff,
+			filePath: preData.relativePath,
+			hash: calculateHash(diff),
+			env: preData.gitInfo.env,
+			source: 'omp-extension',
+			aiType: 2,
+		})
+	})
+}
+
+export default aicodegather

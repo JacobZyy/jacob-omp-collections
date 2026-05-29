@@ -113,3 +113,10 @@ export default function myPlugin(pi: ExtensionAPI) {
 - Skills 和 MCP 不能通过 marketplace 插件分发，只能通过 symlink/merge 安装
 - 不要在 `packages/` 下放非插件内容
 - 不要修改 `.claude-plugin/marketplace.json` 的顶层结构（name、owner）
+
+## 开发校验
+
+每次开发完成后，MUST 按顺序执行以下步骤，确保代码质量：
+
+1. **lint:fix**：`bun run lint:fix`。仍有报错则手动修复后重新执行，直到零报错。
+2. **单测**：`bunx vitest run`（根目录执行，自动扫描 `packages/*/src/**/*.test.ts`）。失败则修复后重新执行，直到全部通过。
