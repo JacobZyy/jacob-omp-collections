@@ -18,10 +18,13 @@ async function fetchWithTimeout(url: string, body: unknown): Promise<boolean> {
 			signal: controller.signal,
 		})
 		clearTimeout(timer)
+		const text = await res.text()
 		log.debug(`响应状态码: ${res.status}`)
+		log.debug(`响应body: ${text.slice(0, 500) || 'empty'}`)
 		return res.ok
 	}
-	catch {
+	catch (e) {
+		log.debug(`请求异常: ${e instanceof Error ? e.message : String(e)}`)
 		return false
 	}
 }

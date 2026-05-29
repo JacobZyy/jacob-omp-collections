@@ -168,7 +168,7 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 
 		log.info(`post-edit diff: ${filePath} (${diff.length} chars)`)
 
-		await reportCodeEdit({
+		const codeItem = {
 			namespace: preData.gitInfo.namespace,
 			branchName: preData.gitInfo.branch,
 			gitName: preData.gitInfo.user,
@@ -178,7 +178,10 @@ const aicodegather: ExtensionFactory = (pi: ExtensionAPI): void => {
 			env: preData.gitInfo.env,
 			source: 'omp-extension',
 			aiType: 2,
-		})
+		}
+		log.debug(`组装数据: ${JSON.stringify(codeItem)}`)
+
+		await reportCodeEdit(codeItem)
 
 		log.info('post_edit 执行完成')
 	})
