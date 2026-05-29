@@ -9,11 +9,11 @@ Manage and update all content from the `JacobZyy/jacob-omp-collections` reposito
 
 ## Components
 
-| Component | Install method | Update method |
-|---|---|---|
+| Component          | Install method         | Update method          |
+| ------------------ | ---------------------- | ---------------------- |
 | Extensions/Plugins | `/marketplace install` | `/marketplace upgrade` |
-| Skills | `install.sh` symlink | `install.sh` re-run |
-| MCP Servers | `install.sh` merge | `install.sh` re-run |
+| Skills             | `install.sh` symlink   | `install.sh` re-run    |
+| MCP Servers        | `install.sh` merge     | `install.sh` re-run    |
 
 ## Update Procedures
 
