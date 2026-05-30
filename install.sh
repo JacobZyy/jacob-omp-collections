@@ -4,6 +4,7 @@
 # 用法:
 #   ./install.sh              # 安装 skills + mcp（需要先 /marketplace install 插件）
 #   ./install.sh --all        # 安装全部（包括 marketplace 插件）
+#   ./install.sh --fix-links  # 修复 marketplace 插件 symlink
 #
 # 安装内容:
 #   - packages/*     → OMP Marketplace 插件（需要 omp 内 /marketplace install）
@@ -60,56 +61,58 @@ install_skills() {
 # ── MCP: merge ───────────────────────────────────────────────────────────────
 
 install_mcp() {
-  if [ ! -f "$MCP_SOURCE" ]; then
-    info "没有 mcp/mcp.json，跳过 MCP 安装"
-    return
-  fi
-
-  # 检查 mcp.json 是否有实际配置（不只是空的 mcpServers）
-  local source_servers
-  source_servers="$(python3 -c "
-import json, sys
-d = json.load(open('$MCP_SOURCE'))
-servers = d.get('mcpServers', {})
-print(len(servers))
-" 2>/dev/null || echo "0")"
-
-  if [ "$source_servers" = "0" ]; then
-    info "mcp/mcp.json 中没有 MCP server 配置，跳过"
-    return
-  fi
-
   info "Installing MCP servers..."
 
-  if [ -f "$MCP_TARGET" ]; then
-    # merge: 以 mcp_source 为准覆盖同名 key
+  if [ ! -f "$MCP_SOURCE" ]; then
+    warn "  MCP 配置文件不存在: $MCP_SOURCE"
+    return
+  fi
+
+  mkdir -p "$(dirname "$MCP_TARGET")"
+
+  if command -v python3 &>/dev/null; then
     python3 -c "
-import json, sys
+import json
+from pathlib import Path
 
-with open('$MCP_TARGET') as f:
-    existing = json.load(f)
-with open('$MCP_SOURCE') as f:
-    incoming = json.load(f)
+source = Path('$MCP_SOURCE')
+target = Path('$MCP_TARGET')
 
-existing.setdefault('mcpServers', {})
-incoming_servers = incoming.get('mcpServers', {})
+with open(source) as f:
+    incoming = json.load(f).get('mcpServers', {})
+
+if target.exists():
+    with open(target) as f:
+        existing = json.load(f)
+else:
+    existing = {}
+
+if 'mcpServers' not in existing:
+    existing['mcpServers'] = {}
 
 added = []
-for name, config in incoming_servers.items():
-    if name not in existing['mcpServers']:
+updated = []
+for name, config in incoming.items():
+    if name in existing['mcpServers']:
+        existing['mcpServers'][name] = config
+        updated.append(name)
+    else:
+        existing['mcpServers'][name] = config
         added.append(name)
-    existing['mcpServers'][name] = config
 
-with open('$MCP_TARGET', 'w') as f:
+with open(target, 'w') as f:
     json.dump(existing, f, indent=2, ensure_ascii=False)
     f.write('\n')
 
-print(f'merged {len(incoming_servers)} servers, {len(added)} new')
+if added:
+    print(f'  added {len(added)} MCP servers: {', '.join(added)}')
+if updated:
+    print(f'  updated {len(updated)} MCP servers: {', '.join(updated)}')
+if not added and not updated:
+    print('  没有 MCP servers 需要安装')
 " 2>/dev/null
-    info "  merged into $MCP_TARGET"
   else
-    cp "$MCP_SOURCE" "$MCP_TARGET"
-    info "  created $MCP_TARGET"
+    warn "  python3 不可用，跳过 MCP 安装"
   fi
 }
 
@@ -135,6 +138,96 @@ for p in d.get('plugins', []):
     fi
   fi
   echo ""
+
+  # 自动修复 symlink
+  fix_plugin_symlinks
+}
+
+# ── Fix plugin symlinks ─────────────────────────────────────────────────────
+
+fix_plugin_symlinks() {
+  info "检查并修复 marketplace 插件 symlink..."
+
+  local plugins_dir="$HOME/.omp/plugins"
+  local node_modules_dir="$plugins_dir/node_modules"
+  local installed_json="$plugins_dir/installed_plugins.json"
+
+  # 检查 installed_plugins.json 是否存在
+  if [ ! -f "$installed_json" ]; then
+    warn "  installed_plugins.json 不存在，跳过"
+    return
+  fi
+
+  # 检查 node_modules 目录是否存在
+  if [ ! -d "$node_modules_dir" ]; then
+    warn "  node_modules 目录不存在，跳过"
+    return
+  fi
+
+  # 使用 python3 解析 installed_plugins.json 并修复 symlink
+  if command -v python3 &>/dev/null; then
+    python3 << 'PYEOF'
+import json
+import os
+
+installed_json = os.path.expanduser("~/.omp/plugins/installed_plugins.json")
+node_modules_dir = os.path.expanduser("~/.omp/plugins/node_modules")
+
+with open(installed_json) as f:
+    data = json.load(f)
+
+plugins = data.get("plugins", {})
+fixed = 0
+skipped = 0
+
+for plugin_id, versions in plugins.items():
+    if not versions:
+        continue
+
+    # 获取最新版本的安装路径
+    latest = versions[-1]
+    install_path = latest.get("installPath", "")
+
+    if not install_path or not os.path.exists(install_path):
+        print(f"  ⚠ {plugin_id}: 安装路径不存在 {install_path}")
+        continue
+
+    # 解析 plugin_id: "name@scope" -> "@scope/name"
+    parts = plugin_id.split("@")
+    if len(parts) != 2:
+        print(f"  ⚠ {plugin_id}: 格式异常")
+        continue
+
+    name, scope = parts
+    scope_dir = os.path.join(node_modules_dir, f"@{scope}")
+    symlink_path = os.path.join(scope_dir, name)
+
+    # 检查 symlink 是否存在
+    if os.path.islink(symlink_path):
+        target = os.readlink(symlink_path)
+        if target == install_path:
+            skipped += 1
+            continue
+        else:
+            os.remove(symlink_path)
+    elif os.path.exists(symlink_path):
+        print(f"  ⚠ {symlink_path}: 存在非 symlink 目录，跳过")
+        continue
+
+    # 创建 symlink
+    os.makedirs(scope_dir, exist_ok=True)
+    os.symlink(install_path, symlink_path)
+    print(f"  ✓ {plugin_id} → {install_path}")
+    fixed += 1
+
+if fixed > 0:
+    print(f"  修复了 {fixed} 个 symlink")
+else:
+    print(f"  所有 symlink 正常（{skipped} 个已存在）")
+PYEOF
+  else
+    warn "  python3 不可用，跳过 symlink 修复"
+  fi
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
@@ -189,16 +282,20 @@ case "${1:-}" in
     install_mcp
     info "Done!"
     ;;
+  --fix-links)
+    fix_plugin_symlinks
+    ;;
   --uninstall)
     uninstall
     ;;
   --help|-h)
-    echo "用法: $0 [--all|--uninstall|--help]"
+    echo "用法: $0 [--all|--fix-links|--uninstall|--help]"
     echo ""
-    echo "  (无参数)     安装 skills + MCP（marketplace 插件需手动安装）"
-    echo "  --all        显示 marketplace 安装命令 + 安装 skills + MCP"
-    echo "  --uninstall  移除所有已安装的 skills 和 MCP"
-    echo "  --help       显示帮助"
+    echo "  (无参数)      安装 skills + MCP（marketplace 插件需手动安装）"
+    echo "  --all         显示 marketplace 安装命令 + 安装 skills + MCP + 修复 symlink"
+    echo "  --fix-links   修复 marketplace 插件 symlink"
+    echo "  --uninstall   移除所有已安装的 skills 和 MCP"
+    echo "  --help        显示帮助"
     ;;
   *)
     install_skills
