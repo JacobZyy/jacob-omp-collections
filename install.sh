@@ -4,7 +4,7 @@
 # 用法:
 #   ./install.sh              # 安装 skills + mcp（需要先 /marketplace install 插件）
 #   ./install.sh --all        # 安装全部（包括 marketplace 插件）
-#   ./install.sh --fix-links  # 修复 marketplace 插件 symlink
+#   ./install.sh --fix-links  # 修复 marketplace 插件 symlink + package.json
 #
 # 安装内容:
 #   - packages/*     → OMP Marketplace 插件（需要 omp 内 /marketplace install）
@@ -139,18 +139,19 @@ for p in d.get('plugins', []):
   fi
   echo ""
 
-  # 自动修复 symlink
+  # 自动修复 symlink 和 package.json
   fix_plugin_symlinks
 }
 
-# ── Fix plugin symlinks ─────────────────────────────────────────────────────
+# ── Fix plugin symlinks + package.json ───────────────────────────────────────
 
 fix_plugin_symlinks() {
-  info "检查并修复 marketplace 插件 symlink..."
+  info "检查并修复 marketplace 插件 symlink + package.json..."
 
   local plugins_dir="$HOME/.omp/plugins"
   local node_modules_dir="$plugins_dir/node_modules"
   local installed_json="$plugins_dir/installed_plugins.json"
+  local package_json="$plugins_dir/package.json"
 
   # 检查 installed_plugins.json 是否存在
   if [ ! -f "$installed_json" ]; then
@@ -164,7 +165,7 @@ fix_plugin_symlinks() {
     return
   fi
 
-  # 使用 python3 解析 installed_plugins.json 并修复 symlink
+  # 使用 python3 解析 installed_plugins.json 并修复 symlink + package.json
   if command -v python3 &>/dev/null; then
     python3 << 'PYEOF'
 import json
@@ -172,21 +173,34 @@ import os
 
 installed_json = os.path.expanduser("~/.omp/plugins/installed_plugins.json")
 node_modules_dir = os.path.expanduser("~/.omp/plugins/node_modules")
+package_json = os.path.expanduser("~/.omp/plugins/package.json")
 
 with open(installed_json) as f:
     data = json.load(f)
 
 plugins = data.get("plugins", {})
-fixed = 0
-skipped = 0
+fixed_symlinks = 0
+skipped_symlinks = 0
+pkg_updates = []
+
+# 读取现有 package.json
+if os.path.exists(package_json):
+    with open(package_json) as f:
+        pkg = json.load(f)
+else:
+    pkg = {"name": "omp-plugins", "private": True, "dependencies": {}}
+
+if "dependencies" not in pkg:
+    pkg["dependencies"] = {}
 
 for plugin_id, versions in plugins.items():
     if not versions:
         continue
 
-    # 获取最新版本的安装路径
+    # 获取最新版本的安装路径和版本号
     latest = versions[-1]
     install_path = latest.get("installPath", "")
+    version = latest.get("version", "0.0.0")
 
     if not install_path or not os.path.exists(install_path):
         print(f"  ⚠ {plugin_id}: 安装路径不存在 {install_path}")
@@ -199,6 +213,7 @@ for plugin_id, versions in plugins.items():
         continue
 
     name, scope = parts
+    pkg_name = f"@{scope}/{name}"
     scope_dir = os.path.join(node_modules_dir, f"@{scope}")
     symlink_path = os.path.join(scope_dir, name)
 
@@ -206,27 +221,42 @@ for plugin_id, versions in plugins.items():
     if os.path.islink(symlink_path):
         target = os.readlink(symlink_path)
         if target == install_path:
-            skipped += 1
-            continue
+            skipped_symlinks += 1
         else:
             os.remove(symlink_path)
+            os.makedirs(scope_dir, exist_ok=True)
+            os.symlink(install_path, symlink_path)
+            print(f"  ✓ 修复 symlink: {plugin_id} → {install_path}")
+            fixed_symlinks += 1
     elif os.path.exists(symlink_path):
         print(f"  ⚠ {symlink_path}: 存在非 symlink 目录，跳过")
         continue
+    else:
+        os.makedirs(scope_dir, exist_ok=True)
+        os.symlink(install_path, symlink_path)
+        print(f"  ✓ 创建 symlink: {plugin_id} → {install_path}")
+        fixed_symlinks += 1
 
-    # 创建 symlink
-    os.makedirs(scope_dir, exist_ok=True)
-    os.symlink(install_path, symlink_path)
-    print(f"  ✓ {plugin_id} → {install_path}")
-    fixed += 1
+    # 检查 package.json 中是否有该依赖
+    if pkg_name not in pkg["dependencies"]:
+        pkg_updates.append((pkg_name, version))
 
-if fixed > 0:
-    print(f"  修复了 {fixed} 个 symlink")
-else:
-    print(f"  所有 symlink 正常（{skipped} 个已存在）")
+# 更新 package.json
+if pkg_updates:
+    for pkg_name, version in pkg_updates:
+        pkg["dependencies"][pkg_name] = version
+    with open(package_json, "w") as f:
+        json.dump(pkg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"  ✓ package.json 新增 {len(pkg_updates)} 个依赖: {', '.join(p[0] for p in pkg_updates)}")
+
+if fixed_symlinks > 0:
+    print(f"  修复了 {fixed_symlinks} 个 symlink")
+elif skipped_symlinks > 0:
+    print(f"  所有 symlink 正常（{skipped_symlinks} 个已存在）")
 PYEOF
   else
-    warn "  python3 不可用，跳过 symlink 修复"
+    warn "  python3 不可用，跳过修复"
   fi
 }
 
@@ -293,7 +323,7 @@ case "${1:-}" in
     echo ""
     echo "  (无参数)      安装 skills + MCP（marketplace 插件需手动安装）"
     echo "  --all         显示 marketplace 安装命令 + 安装 skills + MCP + 修复 symlink"
-    echo "  --fix-links   修复 marketplace 插件 symlink"
+    echo "  --fix-links   修复 marketplace 插件 symlink + package.json"
     echo "  --uninstall   移除所有已安装的 skills 和 MCP"
     echo "  --help        显示帮助"
     ;;
