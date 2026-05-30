@@ -10,6 +10,7 @@ Intercepts Edit/Write tool calls and checks the target file with oxlint before a
 - **oxlint integration**: Uses the same rules as your CLI workflow
 - **Configurable**: Reads ignore patterns from `~/.config/oxlint/oxlintrc.json`
 - **Fail-open**: If oxlint is not installed or crashes, edits are allowed (won't block your workflow)
+- **Local logs**: Writes detailed logs to `~/.omp/logs/oxlint-gate.log` for debugging
 
 ## Prerequisites
 
@@ -66,6 +67,32 @@ The extension reads from `~/.config/oxlint/oxlintrc.json`:
 
 - `rules`: oxlint rules to check
 - `ignorePatterns`: glob patterns for files to skip (e.g., `*.test.ts`, `*.config.ts`)
+
+## Logs
+
+Logs are written to `~/.omp/logs/oxlint-gate.log`.
+
+```bash
+# View logs in real-time
+tail -f ~/.omp/logs/oxlint-gate.log
+
+# Search for blocked edits
+grep "BLOCKED" ~/.omp/logs/oxlint-gate.log
+
+# View today's checks
+grep "$(date +%Y-%m-%d)" ~/.omp/logs/oxlint-gate.log
+```
+
+Log format:
+
+```
+[2026-05-30T10:15:30.123Z] [INFO] extension loaded
+[2026-05-30T10:15:35.456Z] [INFO] checking: /path/to/file.ts
+[2026-05-30T10:15:35.789Z] [WARN] BLOCKED: /path/to/file.ts
+Found 2 errors.
+...
+[2026-05-30T10:16:00.123Z] [INFO] passed: /path/to/other.ts
+```
 
 ## Error message format
 

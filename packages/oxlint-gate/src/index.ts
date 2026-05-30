@@ -6,11 +6,12 @@
  * (e.g., `as any`, `as unknown as X`) are detected.
  *
  * Configuration: reads rules from `~/.config/oxlint/oxlintrc.json`
+ * Logs: writes to `~/.omp/logs/oxlint-gate.log`
  */
 
 import type { ExtensionAPI, ExtensionFactory } from './omp-types'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import process from 'node:process'
@@ -19,6 +20,8 @@ import process from 'node:process'
 
 const TS_EXTENSIONS = /\.(?:ts|tsx|mts|cts|vue)$/
 const OXLINT_CFG = join(homedir(), '.config', 'oxlint', 'oxlintrc.json')
+const LOG_DIR = join(homedir(), '.omp', 'logs')
+const LOG_FILE = join(LOG_DIR, 'oxlint-gate.log')
 
 // Tools that modify files
 const WRITE_TOOLS = new Set(['edit', 'write'])
@@ -27,6 +30,25 @@ const WRITE_TOOLS = new Set(['edit', 'write'])
 
 interface OxlintConfig {
   ignorePatterns?: string[]
+}
+
+// ── Local Logger ───────────────────────────────────────────────────────────
+
+function ensureLogDir(): void {
+  if (!existsSync(LOG_DIR)) {
+    mkdirSync(LOG_DIR, { recursive: true })
+  }
+}
+
+function writeLog(level: 'INFO' | 'WARN' | 'DEBUG', msg: string): void {
+  try {
+    ensureLogDir()
+    const ts = new Date().toISOString()
+    appendFileSync(LOG_FILE, `[${ts}] [${level}] ${msg}\n`)
+  }
+  catch {
+    // Silently ignore log write failures
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -139,10 +161,12 @@ const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
   const log = pi.logger
 
   log.info('oxlint-gate extension loaded')
+  writeLog('INFO', 'extension loaded')
 
   // Check if oxlint config exists
   if (!existsSync(OXLINT_CFG)) {
     log.warn(`oxlint config not found at ${OXLINT_CFG}, extension will be inactive`)
+    writeLog('WARN', `oxlint config not found at ${OXLINT_CFG}`)
   }
 
   pi.on('tool_call', async (event, ctx) => {
@@ -158,16 +182,21 @@ const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
     const filePath = isAbsolute(extractedPath) ? extractedPath : resolve(ctx.cwd, extractedPath)
 
     // Only check TS/Vue files
-    if (!TS_EXTENSIONS.test(filePath))
+    if (!TS_EXTENSIONS.test(filePath)) {
+      writeLog('DEBUG', `skip (not TS/Vue): ${filePath}`)
       return
+    }
 
     // Only check existing files (new files don't have type assertions yet)
-    if (!isExistingFile(filePath))
+    if (!isExistingFile(filePath)) {
+      writeLog('DEBUG', `skip (new file): ${filePath}`)
       return
+    }
 
     // Check if oxlint config exists
     if (!existsSync(OXLINT_CFG)) {
       log.debug('oxlint config not found, skipping check')
+      writeLog('DEBUG', `skip (no config): ${filePath}`)
       return
     }
 
@@ -175,16 +204,19 @@ const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
     const ignorePatterns = loadIgnorePatterns(OXLINT_CFG)
     if (matchesIgnorePattern(filePath, ignorePatterns)) {
       log.debug(`file matches ignore pattern, skipping: ${filePath}`)
+      writeLog('DEBUG', `skip (ignore pattern): ${filePath}`)
       return
     }
 
     log.info(`checking file for type assertions: ${filePath}`)
+    writeLog('INFO', `checking: ${filePath}`)
 
     // Run oxlint
     const { passed, output } = runOxlint(filePath, OXLINT_CFG)
 
     if (!passed) {
       log.warn(`type assertion violations found in ${filePath}`)
+      writeLog('WARN', `BLOCKED: ${filePath}\n${output}`)
 
       // Extract error summary
       const errorLine = output.split('\n').reverse().find(l => /Found .* errors?\./.test(l))
@@ -208,6 +240,7 @@ const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
     }
 
     log.info(`type assertion check passed: ${filePath}`)
+    writeLog('INFO', `passed: ${filePath}`)
     return undefined
   })
 }
