@@ -1,0 +1,27 @@
+{
+  "name": "@jacob-omp-collections/oxlint-gate",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Real-time type assertion gate using oxlint — blocks `as any` and other type laziness before files are saved",
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1"
+  }
+}

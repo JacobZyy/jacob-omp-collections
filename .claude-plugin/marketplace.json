@@ -11,6 +11,13 @@
       "source": "./packages/aicodegather",
       "category": "development",
       "tags": ["analytics", "code-tracking"]
+    },
+    {
+      "name": "oxlint-gate",
+      "description": "Real-time type assertion gate using oxlint — blocks `as any` and other type laziness before files are saved",
+      "source": "./packages/oxlint-gate",
+      "category": "development",
+      "tags": ["lint", "oxlint", "typescript", "type-safety"]
     }
   ]
 }
