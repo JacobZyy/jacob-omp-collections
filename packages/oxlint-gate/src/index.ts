@@ -16,8 +16,6 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import process from 'node:process'
 
-// ── Constants ──────────────────────────────────────────────────────────────
-
 const TS_EXTENSIONS = /\.(?:ts|tsx|mts|cts|vue)$/
 const OXLINT_CFG = join(homedir(), '.config', 'oxlint', 'oxlintrc.json')
 const LOG_DIR = join(homedir(), '.omp', 'logs')
@@ -26,6 +24,12 @@ const HOME = homedir()
 
 // Tools that modify files
 const WRITE_TOOLS = new Set(['edit', 'write'])
+
+/** Max auto-fix attempts per file per turn. */
+const MAX_FIX_ATTEMPTS = 3
+
+/** Max lines of oxlint output to keep. */
+const MAX_OUTPUT_LINES = 20
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -166,95 +170,141 @@ function runOxlint(filePath: string, cfgPath: string): { passed: boolean, output
   return { passed: exitCode !== 1, output }
 }
 
-// ── Extension Factory ──────────────────────────────────────────────────────
+function runOxlintFix(filePath: string, cfgPath: string): { fixed: boolean, remaining: number, output: string } {
+  const result = spawnSync('oxlint', ['--fix', '-c', cfgPath, filePath], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10000,
+  })
+
+  if (result.error) {
+    return { fixed: false, remaining: -1, output: `oxlint error: ${result.error.message}` }
+  }
+
+  const exitCode = result.status ?? -1
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+
+  // exit 0 = all fixed, exit 1 = remaining violations
+  return { fixed: exitCode === 0, remaining: exitCode === 1 ? 1 : 0, output }
+}
+
+function truncateOutput(output: string, maxLines: number = MAX_OUTPUT_LINES): string {
+  const lines = output.split('\n')
+  if (lines.length <= maxLines)
+    return output
+  const head = lines.slice(0, 10).join('\n')
+  const summary = lines.slice(-5).join('\n')
+  return `${head}\n\n... (${lines.length - 15} lines truncated) ...\n\n${summary}`
+}
+
+const pendingPaths = new Map<string, { toolName: string, timestamp: number }>()
+const fixCounters = new Map<string, number>()
 
 const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
   const log = pi.logger
 
-  log.info('oxlint-gate extension loaded')
-  writeLog('INFO', 'extension loaded')
+  log.info('[oxlint-gate] extension loaded (auto-fix mode)')
+  writeLog('INFO', 'extension loaded (auto-fix mode)')
 
-  // Check if oxlint config exists
-  if (!existsSync(OXLINT_CFG)) {
-    log.warn(`oxlint config not found at ${OXLINT_CFG}, extension will be inactive`)
-    writeLog('WARN', `oxlint config not found at ${OXLINT_CFG}`)
-  }
-
+  // ── tool_call: record file path, don't block ────────────────────────
   pi.on('tool_call', async (event, ctx) => {
-    // Only intercept write tools
     if (!WRITE_TOOLS.has(event.toolName))
       return
 
-    // Extract file path
     const extractedPath = extractFilePath(event.input as Record<string, unknown>)
     if (!extractedPath)
       return
 
-    // Expand ~ and resolve to absolute path
     const expandedPath = expandTilde(extractedPath)
     const filePath = isAbsolute(expandedPath) ? expandedPath : resolve(ctx.cwd, expandedPath)
 
-    // Only check TS/Vue files
-    if (!TS_EXTENSIONS.test(filePath)) {
-      writeLog('DEBUG', `skip (not TS/Vue): ${filePath}`)
+    if (!TS_EXTENSIONS.test(filePath))
       return
-    }
-
-    // Only check existing files (new files don't have type assertions yet)
-    if (!isExistingFile(filePath)) {
-      writeLog('DEBUG', `skip (new file): ${filePath}`)
+    if (!isExistingFile(filePath))
       return
-    }
 
-    // Check if oxlint config exists
-    if (!existsSync(OXLINT_CFG)) {
-      log.debug('oxlint config not found, skipping check')
-      writeLog('DEBUG', `skip (no config): ${filePath}`)
+    pendingPaths.set(filePath, { toolName: event.toolName, timestamp: Date.now() })
+    return undefined
+  })
+
+  // ── tool_result: check & auto-fix ───────────────────────────────────
+  pi.on('tool_result', async (event, ctx) => {
+    if (!WRITE_TOOLS.has(event.toolName))
       return
-    }
 
-    // Check ignore patterns
+    const extractedPath = extractFilePath(event.input as Record<string, unknown>)
+    if (!extractedPath)
+      return
+
+    const expandedPath = expandTilde(extractedPath)
+    const filePath = isAbsolute(expandedPath) ? expandedPath : resolve(ctx.cwd, expandedPath)
+
+    const pending = pendingPaths.get(filePath)
+    pendingPaths.delete(filePath)
+    if (!pending)
+      return
+
+    if (!TS_EXTENSIONS.test(filePath))
+      return
+    if (!isExistingFile(filePath))
+      return
+    if (!existsSync(OXLINT_CFG))
+      return
+
     const ignorePatterns = loadIgnorePatterns(OXLINT_CFG)
-    if (matchesIgnorePattern(filePath, ignorePatterns)) {
-      log.debug(`file matches ignore pattern, skipping: ${filePath}`)
-      writeLog('DEBUG', `skip (ignore pattern): ${filePath}`)
+    if (matchesIgnorePattern(filePath, ignorePatterns))
+      return
+
+    const fixCount = fixCounters.get(filePath) ?? 0
+    if (fixCount >= MAX_FIX_ATTEMPTS) {
+      log.debug(`[oxlint-gate] max fix attempts (${MAX_FIX_ATTEMPTS}) reached for ${filePath}`)
       return
     }
 
-    log.info(`checking file for type assertions: ${filePath}`)
-    writeLog('INFO', `checking: ${filePath}`)
+    // 1. Check for violations
+    const { passed } = runOxlint(filePath, OXLINT_CFG)
+    if (passed) {
+      log.info(`[oxlint-gate] passed: ${filePath}`)
+      writeLog('INFO', `passed: ${filePath}`)
+      fixCounters.delete(filePath) // reset counter on clean pass
+      return
+    }
 
-    // Run oxlint
-    const { passed, output } = runOxlint(filePath, OXLINT_CFG)
+    log.warn(`[oxlint-gate] violations in ${filePath}, attempting auto-fix`)
+    writeLog('WARN', `violations in ${filePath}, attempting auto-fix`)
 
-    if (!passed) {
-      log.warn(`type assertion violations found in ${filePath}`)
-      writeLog('WARN', `BLOCKED: ${filePath}\n${output}`)
+    // 2. Try auto-fix
+    const fixResult = runOxlintFix(filePath, OXLINT_CFG)
+    fixCounters.set(filePath, fixCount + 1)
 
-      // Extract error summary
-      const errorLine = output.split('\n').reverse().find(l => /Found .* errors?\./.test(l))
-      const summary = errorLine
-        ? `❌ [oxlint-gate] 检测到类型偷懒断言 — ${errorLine}`
-        : '❌ [oxlint-gate] 检测到类型偷懒断言'
-
+    if (fixResult.fixed) {
+      log.info(`[oxlint-gate] auto-fixed: ${filePath}`)
+      writeLog('INFO', `auto-fixed: ${filePath}`)
       return {
-        block: true,
-        reason: [
-          summary,
-          '',
-          output,
-          '',
-          '按 ts-type-discipline 协议处理：',
-          '  1) 优先用泛型 / 条件类型 / 类型守卫消除断言，禁止 as any / as unknown as X',
-          '  2) 类型体操无效 → 追溯并修复底层类型声明（接口/DTO/类型定义）',
-          '  3) 若是后端接口少返回字段 → 用 AskUserQuestion 与用户确认方案',
-        ].join('\n'),
+        content: [{ type: 'text', text: `✅ [oxlint-gate] auto-fixed lint issues in ${filePath}` }],
       }
     }
 
-    log.info(`type assertion check passed: ${filePath}`)
-    writeLog('INFO', `passed: ${filePath}`)
+    // 3. Some violations remain — report to LLM
+    const remaining = truncateOutput(fixResult.output)
+    log.warn(`[oxlint-gate] partial fix in ${filePath}, remaining issues`)
+    writeLog('WARN', `partial fix in ${filePath}`)
+
+    pi.sendMessage(
+      {
+        customType: 'oxlint-gate',
+        content: `⚠️ [oxlint-gate] ${filePath} has remaining lint issues after auto-fix:\n\n${remaining}`,
+        display: true,
+        attribution: 'agent',
+      },
+      { triggerTurn: false },
+    )
     return undefined
+  })
+
+  // ── turn_end: clear pending paths only (keep fixCounters to prevent loops) ──
+  pi.on('turn_end', async () => {
+    pendingPaths.clear()
   })
 }
 

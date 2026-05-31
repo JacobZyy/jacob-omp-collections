@@ -111,8 +111,9 @@ export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>
  * We only declare the subset we use (on, logger).
  */
 export interface ExtensionAPI {
-  on: ((event: 'session_start', handler: ExtensionHandler<SessionStartEvent>) => void) & ((event: 'tool_call', handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult | undefined>) => void) & ((event: 'tool_result', handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult | undefined>) => void)
+  on: ((event: 'session_start', handler: ExtensionHandler<SessionStartEvent>) => void) & ((event: 'tool_call', handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult | undefined>) => void) & ((event: 'tool_result', handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult | undefined>) => void) & ((event: 'turn_end', handler: ExtensionHandler<{ type: 'turn_end' }>) => void)
   logger: { debug: (msg: string) => void, info: (msg: string) => void, warn: (msg: string) => void, error: (msg: string) => void }
+  sendMessage: (message: { customType: string, content: string, display: boolean, attribution: string }, options?: { triggerTurn?: boolean }) => void
 }
 
 /** Return type for tool_call handlers (can block) */
