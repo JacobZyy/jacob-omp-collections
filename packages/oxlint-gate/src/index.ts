@@ -22,6 +22,7 @@ const TS_EXTENSIONS = /\.(?:ts|tsx|mts|cts|vue)$/
 const OXLINT_CFG = join(homedir(), '.config', 'oxlint', 'oxlintrc.json')
 const LOG_DIR = join(homedir(), '.omp', 'logs')
 const LOG_FILE = join(LOG_DIR, 'oxlint-gate.log')
+const HOME = homedir()
 
 // Tools that modify files
 const WRITE_TOOLS = new Set(['edit', 'write'])
@@ -52,6 +53,16 @@ function writeLog(level: 'INFO' | 'WARN' | 'DEBUG', msg: string): void {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Expand ~ to home directory
+ */
+function expandTilde(p: string): string {
+  if (p === '~' || p.startsWith('~/')) {
+    return join(HOME, p.slice(1))
+  }
+  return p
+}
 
 export function extractFilePath(input: Record<string, unknown>): string | undefined {
   // Direct `path` field (replace/patch modes of edit, and write tool)
@@ -179,7 +190,9 @@ const oxlintGate: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (!extractedPath)
       return
 
-    const filePath = isAbsolute(extractedPath) ? extractedPath : resolve(ctx.cwd, extractedPath)
+    // Expand ~ and resolve to absolute path
+    const expandedPath = expandTilde(extractedPath)
+    const filePath = isAbsolute(expandedPath) ? expandedPath : resolve(ctx.cwd, expandedPath)
 
     // Only check TS/Vue files
     if (!TS_EXTENSIONS.test(filePath)) {
